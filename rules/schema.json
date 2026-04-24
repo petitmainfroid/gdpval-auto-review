@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["recommendation", "reasons"],
+  "properties": {
+    "recommendation": {
+      "type": "string",
+      "enum": ["pass", "revise", "reject"],
+      "description": "机审结论：pass=通过，revise=需返修，reject=拒绝/废弃"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "具体的问题描述及返修建议。通过时为空数组 []"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,6 @@
+# Daytona SDK —— 用于创建和管理远程沙箱
+# 文档: https://www.daytona.io/docs/python-sdk/
+daytona-sdk
+
+# 从 .env 文件加载环境变量
+python-dotenv
