@@ -15,9 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade pip
 
 # 安装 Python 依赖（daytona-sdk 在火山引擎镜像可能没有，用官方 PyPI 兜底）
+# 修改点：ivolces → volces（公网可用）
 RUN pip install --no-cache-dir \
-    -i https://mirrors.ivolces.com/pypi/simple/ \
-    --extra-index-url https://pypi.org/simple/ \
+    -i https://mirrors.volces.com/pypi/simple/  \
+    --extra-index-url https://pypi.org/simple/  \
     daytona-sdk \
     python-dotenv
 
