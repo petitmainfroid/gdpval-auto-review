@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-MCPMark Playwright Auto-Review Runner (Daytona) — 使用 prompt_rubrics.md
+MCPMark Playwright Auto-Review Runner (Daytona) — Rubrics 机审
 
-在 Daytona 沙箱中运行 claude -p 对单个 task 进行机审。
-使用 prompt_rubrics.md 作为系统提示词（替代原来的 prompt.md）。
+在 Daytona 沙箱中运行 claude -p，使用 prompt_rubrics.md 作为系统提示词，
+对 /workspace/rubrics.json 进行机审，结果输出到 /workspace/result.json。
 
 环境变量：
-  必填：
-    ZIP_URL      - TOS ZIP 文件 URL
   可选：
     RECORD_ID    - 记录 ID
 """
@@ -30,23 +28,24 @@ def _log(*args, **kwargs):
     print(*args, **kwargs)
 
 # ---------------------------------------------------------------------------
-# 本地仓库路径
+# 本地路径
 # ---------------------------------------------------------------------------
 SCRIPT_DIR  = Path(__file__).parent.resolve()
 REPO_ROOT   = SCRIPT_DIR.parent
-SCHEMA_PATH = REPO_ROOT / "rules" / "schema.json"
 
-# ⚠️ 修改：直接读取 prompt_rubrics.md 作为主提示词，不再读取 prompt.md
-PROMPT_PATH = REPO_ROOT / "rules" / "prompt_rubrics.md"
+# 审查标准（系统提示词）
+LOCAL_PROMPT  = REPO_ROOT / "rules" / "prompt_rubrics.md"
+# 输出格式约束
+LOCAL_SCHEMA  = REPO_ROOT / "rules" / "schema.json"
+
+# 被审查的文件（从飞书拉取到本地的 rubrics）
+LOCAL_RUBRICS = Path("/workspace/rubrics.json")
+# 机审结果输出
+LOCAL_RESULT  = Path("/workspace/result.json")
 
 # ---------------------------------------------------------------------------
-# TOS / Daytona / OpenRouter 配置（保持不变）
+# Daytona / OpenRouter 配置
 # ---------------------------------------------------------------------------
-TOS_ACCESS_KEY_ID     = os.environ.get("TOS_ACCESS_KEY_ID", "")
-TOS_ACCESS_KEY_SECRET = os.environ.get("TOS_ACCESS_KEY_SECRET", "")
-TOS_REGION        = os.environ.get("TOS_REGION",    "cn-beijing")
-TOS_ENDPOINT      = os.environ.get("TOS_ENDPOINT",  "tos-cn-beijing.volces.com")
-
 DAYTONA_API_KEY  = os.environ.get("DAYTONA_API_KEY", "")
 DAYTONA_SNAPSHOT = os.environ.get("DAYTONA_SNAPSHOT", "claude-code-snapshot")
 
@@ -57,12 +56,11 @@ CLAUDE_MODEL        = "google/gemini-3.1-pro-preview"
 # ---------------------------------------------------------------------------
 # 沙箱内路径
 # ---------------------------------------------------------------------------
-REMOTE_HOME   = "/home/daytona"
-REMOTE_REVIEW = f"{REMOTE_HOME}/review"
-REMOTE_SCHEMA = f"{REMOTE_REVIEW}/schema.json"
-REMOTE_PROMPT = f"{REMOTE_REVIEW}/prompt.md"  # 沙箱内仍叫 prompt.md，实际内容是 rubrics
-
-REMOTE_TASK   = f"{REMOTE_REVIEW}/task"
+REMOTE_HOME    = "/home/daytona"
+REMOTE_REVIEW  = f"{REMOTE_HOME}/review"
+REMOTE_RUBRICS = f"{REMOTE_REVIEW}/rubrics.json"   # 被审查内容
+REMOTE_PROMPT  = f"{REMOTE_REVIEW}/prompt.md"      # 系统提示词（实际为 rubrics 标准）
+REMOTE_SCHEMA  = f"{REMOTE_REVIEW}/schema.json"    # JSON 输出格式约束
 
 
 def sandbox_exec(sandbox, command: str, label: str = "cmd",
@@ -95,42 +93,33 @@ def cleanup_sandbox(daytona, sandbox):
         _log("[WARN] 清理超时，依赖平台自动回收")
 
 
-def setup_sandbox(sandbox, zip_url: str):
-    """配置 tosutil、下载解压 ZIP、上传 schema.json 和 prompt_rubrics.md"""
+def setup_sandbox(sandbox):
+    """上传 rubrics.json、schema.json 和 prompt_rubrics.md 到沙箱"""
 
-    # 1. 配置 tosutil
-    _log("[INFO] 配置 tosutil...")
-    sandbox.process.exec(
-        f"tosutil config -i {TOS_ACCESS_KEY_ID} -k {TOS_ACCESS_KEY_SECRET} "
-        f"-e {TOS_ENDPOINT} -re {TOS_REGION}"
-    )
+    # 1. 检查本地文件
+    if not LOCAL_RUBRICS.exists():
+        raise FileNotFoundError(f"本地 rubrics.json 不存在: {LOCAL_RUBRICS}")
+    if not LOCAL_PROMPT.exists():
+        raise FileNotFoundError(f"本地 prompt_rubrics.md 不存在: {LOCAL_PROMPT}")
+    if not LOCAL_SCHEMA.exists():
+        raise FileNotFoundError(f"本地 schema.json 不存在: {LOCAL_SCHEMA}")
 
-    # 2. 下载 ZIP
-    remote_zip = f"{REMOTE_REVIEW}/task.zip"
+    # 2. 创建沙箱工作目录
     sandbox.process.exec(f"mkdir -p {REMOTE_REVIEW}")
-    _log(f"[INFO] 下载 ZIP: {zip_url}")
-    code, out = sandbox_exec(sandbox,
-        f"tosutil cp '{zip_url}' '{remote_zip}' 2>&1",
-        label="download-zip", timeout=300)
-    if code != 0:
-        raise RuntimeError(f"ZIP 下载失败:\n{out[:500]}")
 
-    # 3. 解压
-    sandbox.process.exec(f"mkdir -p '{REMOTE_TASK}'")
-    sandbox.process.exec(f"unzip -o '{remote_zip}' -d '{REMOTE_TASK}'")
-    r = sandbox.process.exec(f"ls '{REMOTE_TASK}'")
-    _log(f"[INFO] task 目录内容: {r.result.strip()}")
+    # 3. 上传 rubrics.json（被审查内容）
+    _log(f"[INFO] 上传 rubrics.json ({LOCAL_RUBRICS.stat().st_size} bytes)...")
+    sandbox.fs.upload_file(LOCAL_RUBRICS.read_bytes(), REMOTE_RUBRICS)
 
-    # 4. 上传 schema.json 和 prompt_rubrics.md（沙箱内仍命名为 prompt.md）
+    # 4. 上传 schema.json（输出格式约束）
     _log("[INFO] 上传 schema.json...")
-    sandbox.fs.upload_file(SCHEMA_PATH.read_bytes(), REMOTE_SCHEMA)
-    
-    _log("[INFO] 上传 prompt_rubrics.md（沙箱内作为 prompt.md）...")
-    if not PROMPT_PATH.exists():
-        raise FileNotFoundError(f"本地 prompt_rubrics.md 不存在: {PROMPT_PATH}")
-    sandbox.fs.upload_file(PROMPT_PATH.read_bytes(), REMOTE_PROMPT)
+    sandbox.fs.upload_file(LOCAL_SCHEMA.read_bytes(), REMOTE_SCHEMA)
 
-    # 5. 预创建 ~/.claude/settings.json
+    # 5. 上传 prompt_rubrics.md（沙箱内命名为 prompt.md，作为系统提示词）
+    _log("[INFO] 上传 prompt_rubrics.md（沙箱内作为 prompt.md）...")
+    sandbox.fs.upload_file(LOCAL_PROMPT.read_bytes(), REMOTE_PROMPT)
+
+    # 6. 预创建 ~/.claude/settings.json
     _log("[INFO] 预创建 ~/.claude/settings.json ...")
     claude_settings = json.dumps({
         "enableToolSearch": False,
@@ -158,8 +147,9 @@ def run_preflight(sandbox):
         ("claude 版本",    "claude --version 2>&1 || echo 'claude not found'"),
         ("环境变量",       "env | grep -iE 'ANTHROPIC|CLAUDE|IS_SANDBOX|API' | sort"),
         ("schema 文件",    f"ls -la '{REMOTE_SCHEMA}' 2>&1"),
-        ("prompt 文件",    f"ls -la '{REMOTE_PROMPT}' 2>&1"),  # 现在就是 rubrics
-        ("task 目录",      f"ls -la '{REMOTE_TASK}/' 2>&1"),
+        ("prompt 文件",    f"ls -la '{REMOTE_PROMPT}' 2>&1"),
+        ("rubrics 文件",   f"ls -la '{REMOTE_RUBRICS}' 2>&1"),
+        ("rubrics 首行",   f"head -3 '{REMOTE_RUBRICS}' 2>&1"),
         ("schema 首行",    f"head -3 '{REMOTE_SCHEMA}' 2>&1"),
         ("磁盘空间",       "df -h / 2>&1 | tail -1"),
         ("网络-openrouter","curl -m 5 -s -o /dev/null -w 'HTTP %{http_code} (%{time_total}s)' "
@@ -230,20 +220,18 @@ def run_preflight(sandbox):
 
 
 def run_claude(sandbox) -> str:
-    """运行 claude -p，使用 prompt_rubrics.md 作为系统提示词"""
+    """运行 claude -p，使用 prompt_rubrics.md 作为系统提示词审查 rubrics.json"""
     run_preflight(sandbox)
 
-    remote_stderr = f"{REMOTE_REVIEW}/claude_stderr.txt"
-    
-    # ⚠️ 系统提示词直接指向 REMOTE_PROMPT（实际内容是 rubrics）
-    # user prompt 里不再额外引用 rubrics 文件
+    # 系统提示词 = rubrics 评分标准（REMOTE_PROMPT 实际内容是 prompt_rubrics.md）
+    # User Prompt = 要求 Claude 读取 rubrics.json 并根据标准审查
     cmd = (
         f"claude -p"
         f" --dangerously-skip-permissions"
         f" --json-schema \"$(cat '{REMOTE_SCHEMA}')\""
         f" --system-prompt-file '{REMOTE_PROMPT}'"
-        f" 'Review the {REMOTE_TASK} directory."
-        f" Output ONLY a bare JSON object matching the schema."
+        f" 'Read and review the content of {REMOTE_RUBRICS} using the rubrics defined in the system prompt."
+        f" Evaluate each criterion carefully and output ONLY a bare JSON object matching the schema."
         f" No markdown, no explanation, no code fences.'"
         f" --output-format json"
         f" < /dev/null"
@@ -265,15 +253,11 @@ def run_claude(sandbox) -> str:
 def main():
     from daytona import Daytona, DaytonaConfig, CreateSandboxFromSnapshotParams, DaytonaNotFoundError
 
-    zip_url   = os.environ.get("ZIP_URL", "")
     record_id = os.environ.get("RECORD_ID", "")
 
-    if not zip_url:
-        _log("[ERROR] ZIP_URL 未设置")
-        sys.exit(1)
-
-    _log(f"=== MCPMark Playwright Auto-Review ===")
-    _log(f"ZIP_URL  : {zip_url}")
+    _log(f"=== MCPMark Rubrics Auto-Review ===")
+    _log(f"输入文件 : {LOCAL_RUBRICS}")
+    _log(f"输出文件 : {LOCAL_RESULT}")
     if record_id:
         _log(f"record_id: {record_id}")
     _log(f"\n[ENV] 关键环境变量:")
@@ -282,13 +266,11 @@ def main():
     _log(f"  OPENROUTER_BASE_URL : {OPENROUTER_BASE_URL}")
     _log(f"  OPENROUTER_API_KEY  : {OPENROUTER_API_KEY[:20]}... (长度: {len(OPENROUTER_API_KEY)})")
     _log(f"  CLAUDE_MODEL        : {CLAUDE_MODEL}")
-    _log(f"  TOS_REGION          : {TOS_REGION}")
-    _log(f"  TOS_ENDPOINT        : {TOS_ENDPOINT}")
     _log("=" * 44)
 
     daytona = Daytona(DaytonaConfig(api_key=DAYTONA_API_KEY))
 
-    sandbox_name = f"playwright-review-{uuid.uuid4().hex[:6]}"
+    sandbox_name = f"rubrics-review-{uuid.uuid4().hex[:6]}"
 
     try:
         existing = daytona.get(sandbox_name)
@@ -330,12 +312,19 @@ def main():
     _log(f"[INFO] 沙箱创建成功: {sandbox.id}")
 
     try:
-        setup_sandbox(sandbox, zip_url)
+        setup_sandbox(sandbox)
         stdout = run_claude(sandbox)
 
     except Exception as e:
         _log(f"[ERROR] 任务失败: {e}")
-        print(json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))
+        # 即使失败也写入错误信息到 result.json
+        error_record = {"error": str(e)}
+        LOCAL_RESULT.write_text(
+            json.dumps(error_record, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        _log(f"[INFO] 错误信息已保存到: {LOCAL_RESULT}")
+        print(json.dumps(error_record, ensure_ascii=False, indent=2))
         sys.exit(1)
 
     finally:
@@ -387,7 +376,11 @@ def main():
     except Exception as e:
         _log(f"[WARN] 解析 claude 输出失败({e})，原样输出")
         result_text = stdout
-        record_text = json.dumps({"error": str(e)}, ensure_ascii=False, indent=2)
+        record_text = json.dumps({"error": str(e), "raw": stdout}, ensure_ascii=False, indent=2)
+
+    # 写入 /workspace/result.json
+    LOCAL_RESULT.write_text(record_text, encoding="utf-8")
+    _log(f"[INFO] 机审结果已保存到: {LOCAL_RESULT}")
 
     _log(f"[RAW] claude 原始输出:\n{stdout}")
     _log(f"[RESULT] 完整审查结果:\n{result_text}")
