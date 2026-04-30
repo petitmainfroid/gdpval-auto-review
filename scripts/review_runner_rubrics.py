@@ -132,7 +132,7 @@ def setup_sandbox(sandbox):
     sandbox.process.exec("mkdir -p ~/.claude")
     sandbox.fs.upload_file(
         claude_settings.encode("utf-8"),
-        "/root/.claude/settings.json"
+        "/workspace/.claude/settings.json"
     )
 
     _log("[INFO] 沙箱初始化完成")
