@@ -47,7 +47,7 @@ LOCAL_RESULT  = Path("/workspace/result.json")
 # Daytona / OpenRouter 配置
 # ---------------------------------------------------------------------------
 DAYTONA_API_KEY  = os.environ.get("DAYTONA_API_KEY", "")
-DAYTONA_SNAPSHOT = os.environ.get("DAYTONA_SNAPSHOT", "claude-code-snapshot")
+DAYTONA_SNAPSHOT = os.environ.get("DAYTONA_SNAPSHOT")
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 OPENROUTER_API_KEY  = os.environ.get("OPENROUTER_API_KEY", "")
